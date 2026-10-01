@@ -2,9 +2,9 @@
 
 这个文件集中体现了你学过的：ChatPromptTemplate / Runnable（LCEL 管道符）/ StrOutputParser。
 """
-from langchain_core.output_parsers import StrOutputParser
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_ollama import ChatOllama
+from langchain_core.output_parsers import StrOutputParser   #输出解析工具
+from langchain_core.prompts import ChatPromptTemplate       #构建提示词
+from langchain_ollama import ChatOllama                     #调用ollama模型
 
 from config import LLM_MODEL, OLLAMA_BASE_URL
 

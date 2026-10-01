@@ -12,6 +12,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from loaders import load_documents, split_documents  # noqa: E402
 from vectorstore import build_index  # noqa: E402
+from chunk_store import save_chunks  # noqa: E402
 
 
 def main():
@@ -24,7 +25,8 @@ def main():
     chunks = split_documents(docs)
     print(f"切分完成：{len(chunks)} 个块（chunk 参数见 .env）")
     build_index(chunks, force=force)
-    print(f"索引已保存到 storage/index/，可以启动服务了：uvicorn api.main:app --reload")
+    save_chunks(chunks)  # 阶段2：给 BM25 / 重排留一份原始文本
+    print(f"索引已保存到 storage/index/（含 chunks.json），可以启动服务了：uvicorn api.main:app --reload")
 
 
 if __name__ == "__main__":

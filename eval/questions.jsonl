@@ -1,3 +1,29 @@
-{"question": "什么是RAG？它解决大模型的什么问题？", "ground_truth": "RAG是检索增强生成，通过先检索外部知识再交给大模型生成，缓解幻觉和知识过时问题。"}
-{"question": "RAG的离线链路包含哪些步骤？", "ground_truth": "原始文档、加载清洗、分块、向量化、存入向量库。"}
-{"question": "知识库中不存在的问题：公司2027年的营收目标是多少？", "ground_truth": ""}
+{"question": "什么是RAG？它解决大模型的什么问题？", "ground_truth": "RAG（检索增强生成）先检索外部知识库，再让大模型基于检索到的内容作答，缓解幻觉和知识过时的问题。"}
+{"question": "RAG的离线建库链路包含哪五个节点？", "ground_truth": "原始文档 → 加载清洗 → 分块 → 向量化 → 存入向量库。"}
+{"question": "RAG在线链路中，被向量化的是用户问题还是文档内容？", "ground_truth": "是用户提出的问题；文档在离线建库阶段就已经向量化并入库了。"}
+{"question": "bge-small-zh-v1.5 和 bge-m3 输出的向量维度分别是多少？", "keywords": ["512", "1024"], "ground_truth": "bge-small-zh-v1.5 是 512 维，bge-m3 是 1024 维。"}
+{"question": "向量里的每一维度有可解释的含义吗？", "keywords": ["不可解释"], "ground_truth": "没有。每一维没有人类可读的含义，是整个模型协同训练出来的分布式表示。"}
+{"question": "文本检索为什么优先用余弦相似度而不是欧氏距离？", "keywords": ["欧氏距离"], "ground_truth": "余弦只比较方向，对文本长度不敏感；欧氏距离关注绝对位置，长度差异大的文本会失真。"}
+{"question": "BM25 的 k1 和 b 参数分别控制什么？常用取值是多少？", "keywords": ["k1", "0.75"], "ground_truth": "k1 控制词频饱和速度（常用 1.2-2.0），b 控制文档长度归一化强度（常用 0.75）。"}
+{"question": "中文使用 BM25 为什么必须先分词？用什么工具？", "keywords": ["jieba"], "ground_truth": "BM25 按词统计而中文没有空格，所以要先分词；常用 jieba。"}
+{"question": "RRF 融合算法的平滑常数 k 一般取多少？它的作用是什么？", "keywords": ["k=60"], "ground_truth": "k 常取 60，作用是让各名次的得分差距更平缓，避免第一名权重过大。"}
+{"question": "cross-encoder 和双塔模型在检索流程里分别负责什么？", "keywords": ["cross-encoder"], "ground_truth": "双塔负责召回（可预计算、速度快），cross-encoder 负责精排（问题和文档拼接交互，更准但慢）。"}
+{"question": "LCEL 的管道符底层靠 Python 的什么机制实现？", "keywords": ["__or__"], "ground_truth": "运算符重载——组件实现 __or__ 方法，返回 RunnableSequence 对象。"}
+{"question": "Document 的 metadata 里 source 字段是谁写入的？", "keywords": ["TextLoader"], "ground_truth": "由 LangChain 的 TextLoader 在创建 Document 时自动写入文件路径。"}
+{"question": "chunk_overlap 一般设置为 chunk_size 的多少比例？", "keywords": ["chunk_overlap"], "ground_truth": "10%-20%。太大造成重复和成本上升，太小会导致语义断裂。"}
+{"question": "系统提示词的三分法指哪三部分？", "keywords": ["三分法"], "ground_truth": "人设（你是谁）+ 规则（能做什么、不能做什么）+ 输出格式（怎么答）。"}
+{"question": "RAG 场景下的幻觉分成哪两种形态？", "keywords": ["越出参考", "引用错配"], "ground_truth": "一是越出参考（编造知识库里没有的内容），二是引用错配（答案对但引用来源标错）。"}
+{"question": "拒答准确率衡量什么？", "keywords": ["拒答准确率"], "ground_truth": "衡量该拒答的问题是否真的拒答了，是防幻觉的硬指标。"}
+{"question": "Agent 的 ReAct 模式是什么含义？", "keywords": ["ReAct"], "ground_truth": "Reasoning + Acting，思考与行动交替：先推理下一步做什么，再调用工具，观察结果后继续。"}
+{"question": "Tool 的三要素是什么？其中哪一个最影响模型选择工具的准确率？", "keywords": ["工具描述"], "ground_truth": "名称、描述、参数 schema；描述最关键，模型靠读它判断什么时候该用这个工具。"}
+{"question": "MCP 在本地和远程分别用什么传输方式？", "keywords": ["stdio"], "ground_truth": "本地用 stdio（标准输入输出），远程用 HTTP/SSE。"}
+{"question": "MCP 把 N 个应用与 M 个工具的适配代码量从多少降到了多少？", "keywords": ["N+M"], "ground_truth": "从 N×M 降到 N+M。"}
+{"question": "公司2029年的净利润目标是多少？", "must_refuse": true}
+{"question": "我们团队使用的 Kubernetes 集群有多少个节点？", "must_refuse": true}
+{"question": "我们产品的定价策略是怎样的？", "must_refuse": true}
+{"question": "公司食堂的午餐时间是几点？", "must_refuse": true}
+{"question": "请详细介绍我们公司内部日志采集系统的架构设计。", "must_refuse": true}
+{"question": "关键词检索和语义检索，各自依赖什么底层结构或模型？", "keywords": ["倒排", "双塔"], "ground_truth": "关键词检索依赖倒排索引加词频统计打分；语义检索依赖双塔结构的嵌入模型把文本编码成向量。"}
+{"question": "一份中文文档入库时，除了正文，还要留下什么结构化信息？中文文本在检索前又必须先做哪一步加工？", "keywords": ["元数据", "分词"], "ground_truth": "入库时要留下来源等元数据用于溯源和过滤；中文检索前必须先分词，因为按词统计的算法无法处理连续汉字。"}
+{"question": "评估知识库问答系统时，答案的内容质量和出处的可靠性分别考什么指标？", "keywords": ["忠实度", "引用编号"], "ground_truth": "内容质量看忠实度（答案是否完全基于检索资料）；出处可靠性看引用是否标注正确，即引用编号能否对应到真实来源。"}
+{"question": "同样的问题、同样的资料，为什么两次生成的答案会不同？又靠什么确认答案的依据？", "keywords": ["温度", "溯源"], "ground_truth": "生成参数中的温度决定采样随机性，温度越高输出越不稳定；依据靠引用溯源，把答案中的编号对应回检索到的原文片段。"}

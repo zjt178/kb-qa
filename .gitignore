@@ -1,5 +1,7 @@
 storage/
+models/
 __pycache__/
 *.pyc
 .env
 .venv/
+.idea/
