@@ -11,5 +11,7 @@ pydantic>=2.0
 rank-bm25>=0.2.2
 jieba>=0.42.1
 huggingface-hub>=0.24
+# stage-3: MCP server (exposes retrieval as a standard tool service)
+mcp>=1.2
 # stage-2 rerank (install when you switch to hybrid+rerank, downloads ~1GB model):
 # sentence-transformers>=3.0

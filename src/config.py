@@ -9,6 +9,14 @@ OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 LLM_MODEL = os.getenv("LLM_MODEL", "qwen2.5:7b")
 EMBED_MODEL = os.getenv("EMBED_MODEL", "bge-m3")
 
+# Agent 链路模型（默认与 LLM_MODEL 相同）。
+# 为什么单独留一个开关：Agent 依赖**原生 tool calling**，对模型工具协议遵循要求高。
+# 实测（2026-10-06）：qwen2.5-coder 的工具调用是"文本模仿"式 —— 模板里明明写了
+# <tool_call> 格式，它却输出裸 JSON / [name {json}] 等各种变体，格式不稳定，
+# 29 题一度全军覆没（0 次工具调用）。qwen2.5:7b 这类指令模型才可靠。
+# 固定链路（pipeline）继续用 LLM_MODEL，不受影响。
+AGENT_LLM_MODEL = os.getenv("AGENT_LLM_MODEL", LLM_MODEL)
+
 # 关键：把相对路径锚定到项目根目录（config.py 的上一级），
 # 这样无论从 PowerShell、PyCharm 还是别的什么地方启动，路径都不会断。
 ROOT = Path(__file__).resolve().parents[1]

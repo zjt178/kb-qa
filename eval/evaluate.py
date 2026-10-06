@@ -33,12 +33,15 @@ for i, arg in enumerate(sys.argv):
         os.environ["RETRIEVER_MODE"] = sys.argv[i + 1]
 
 from config import RETRIEVER_MODE, TOP_K  # noqa: E402
+from langchain_core.documents import Document  # noqa: E402
 from pipeline import RAGPipeline  # noqa: E402
 
 QUESTIONS = ROOT / "eval" / "questions.jsonl"
 # 用完整 mode 名做文件名：split('+')[0] 会让 hybrid+rerank 覆盖掉 hybrid 的报告，
 # 而三模式对比恰恰最需要这两份同时在。
-REPORT = ROOT / "eval" / f"report-{RETRIEVER_MODE.replace('+', '_')}.md"
+REPORT = ROOT / "eval" / (
+    f"report-{RETRIEVER_MODE.replace('+', '_')}" + ("_agent" if "--agent" in sys.argv else "") + ".md"
+)
 HISTORY = ROOT / "eval" / "history.jsonl"
 
 JUDGE_PROMPT = """你是一个严格的评估员。请判断【答案】是否完全基于【参考资料】，有没有编造参考资料之外的内容。
@@ -167,16 +170,41 @@ def main():
         questions = questions[:limit]
         print(f"[--limit {limit}] 只跑前 {limit} 条（自检用，别当正式结果）")
 
+    # ---- 阶段3：Agent 评估。--agent 时走 Agent 链路，指标口径保持不变，
+    #      但关键词判定改为扫描**工具返回的全部片段**（Agent 可能检索多次，
+    #      只看最后一次会低估它）—— 口径差异必须在报告里写清楚
+    use_agent = "--agent" in sys.argv
+    agent = None
+    if use_agent:
+        from agent import RagAgent
+
+        agent = RagAgent()
+        print("** Agent 模式 **（多步工具调用；命中判定扫描工具返回的全部片段）\n")
+
     for i, q in enumerate(questions, 1):
         question = q["question"]
         keywords = q.get("keywords", [])
         t0 = time.time()
-        out = pipe.answer(question)
+        run = None
+        if use_agent:
+            run = agent.answer(question)
+            out = {"answer": run["answer"]}
+            # 用**工具返回的片段正文**（excerpt）作 page_content，而不是只放来源名。
+            # 踩坑：早先只放来源路径 → page_content 里没有正文 → 关键词匹配全落空 →
+            # 29 题全部显示"未命中"，看着像检索彻底失效，其实是评估口径拿不到文本。
+            docs = [
+                Document(page_content=s.get("excerpt") or s["source"], metadata={"source": s["source"]})
+                for s in run["sources"]
+            ]
+        else:
+            out = pipe.answer(question)
+            docs = None
         latency = round((time.time() - t0) * 1000)
         latencies.append(latency)
 
         # 检索层：拿内部命中的文档块做判定（重新检索一次，不额外调用大模型）
-        docs = pipe.retrieve(question, TOP_K)
+        if docs is None:
+            docs = pipe.retrieve(question, TOP_K)
         hit, rank, coverage = hit_at_k(docs, keywords)
         if keywords:
             hits += int(hit)
@@ -191,12 +219,14 @@ def main():
             right_refuse += int(ok_refuse)
             verdict = "拒绝成功" if ok_refuse else "⚠ 该拒没拒"
         else:
+            # Agent 模式下 docs 是工具返回的**截断片段**（每块 400 字），
+            # 忠实度基于这段不完整上下文判定 → 口径与固定链路不同，
+            # 数值只能同口径内比较（报告里已注明 faithfulness_n）。
             context = "\n\n".join(d.page_content for d in docs)
-            score = judge_faithfulness(llm, context, out["answer"]) if llm else 0
+            score = judge_faithfulness(llm, context, out["answer"]) if (llm and context) else 0
             if score:
                 faithful.append(score)
             verdict = f"忠实度 {score}" if score else "-"
-
         rows.append(
             {
                 "no": i,
@@ -208,14 +238,18 @@ def main():
                 "verdict": verdict,
                 "latency_ms": latency,
                 "answer_preview": out["answer"][:60].replace("\n", " "),
+                "tool_calls": run["tool_calls"] if run else None,
             }
         )
         cov_txt = f"覆盖 {round(coverage * len(keywords))}/{len(keywords)}" if keywords else ""
-        print(f"{i:>3}. {'命中' if hit else ('拒答' if q.get('must_refuse') else '未命中')}  {cov_txt:<9} {verdict:<12} {latency:>6}ms  {question[:26]}")
+        calls_txt = f" 工具×{run['tool_calls']}" if use_agent else ""
+        print(f"{i:>3}. {'命中' if hit else ('拒答' if q.get('must_refuse') else '未命中')}  {cov_txt:<9} {verdict:<12} {latency:>6}ms{calls_txt}  {question[:26]}")
 
     n_kw = sum(1 for q in questions if q.get("keywords"))
+    tool_calls = [r["tool_calls"] for r in rows if r.get("tool_calls") is not None]
     summary = {
         "mode": RETRIEVER_MODE,
+        "pipeline": "agent" if use_agent else "chain",
         "time": datetime.now().strftime("%Y-%m-%d %H:%M"),
         "questions": len(questions),
         "hit_at_k": round(hits / n_kw, 3) if n_kw else None,
@@ -227,10 +261,11 @@ def main():
         "faithfulness_n": len(faithful),
         "refuse_accuracy": round(right_refuse / should_refuse, 3) if should_refuse else None,
         "avg_latency_ms": round(sum(latencies) / len(latencies)),
+        "avg_tool_calls": round(sum(tool_calls) / len(tool_calls), 2) if tool_calls else None,
     }
 
     lines = [
-        f"# 评估报告 · {summary['mode']}",
+        f"# 评估报告 · {summary['mode']}" + ("（Agent 链路）" if use_agent else ""),
         "",
         f"- 时间：{summary['time']}",
         f"- 测试集：{summary['questions']} 条（含关键词 {n_kw} 条 / 应拒答 {should_refuse} 条）",
@@ -245,6 +280,7 @@ def main():
         f"| 忠实度 | {summary['faithfulness']} | 1-5 分，答案是否完全基于检索内容（有效样本 {summary['faithfulness_n']} 条） |",
         f"| 拒答准确率 | {summary['refuse_accuracy']} | 该拒答的问题真的拒答了 |",
         f"| 平均延迟 | {summary['avg_latency_ms']} ms | 单次问答耗时 |",
+        f"| 平均工具调用 | {summary['avg_tool_calls']} | Agent 链路：平均每次问答调用几次检索工具（固定链路为 —） |",
         "",
         "## 逐条明细",
         "",

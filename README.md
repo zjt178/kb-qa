@@ -133,8 +133,104 @@ python eval/evaluate.py --mode hybrid+rerank  # 再叠 cross-encoder 精排
 
 - [x] **阶段 1：RAG MVP** — 加载/切分/嵌入/入库 + 检索 + 生成 + 引用溯源 + FastAPI + 中文 Web UI（tag `v0.1-mvp`）
 - [x] **阶段 2：检索优化与评估闭环** — 混合检索（BM25+向量，RRF）+ cross-encoder 精排 + 29 题评测集 + 三模式指标对比（tag `v0.2-retrieval`）
-- [ ] 阶段 3：Agent 化 — 检索/SQL 封装为 tools + 自建 MCP Server（`agent/`）
+- [x] **阶段 3：Agent 化与能力服务化** — 检索封装为 LangChain Tool + 多步 Agent + 自建 MCP Server；量化出「此规模下 Agent 无检索增益、延迟 3.5×」的**收益边界**（tag `v0.3-agent`）
 - [ ] 阶段 4：README 打磨 + 指标数据 + 简历定稿
+
+## 阶段 3：把检索能力服务化
+
+阶段 1/2 的检索是**固定链路**：检索一定发生、只发生一次，query 就是用户原话 —— 用户问得含糊，检索跟着烂。阶段 3 把「要不要检索、检索什么、检索几次」交给模型决定。
+
+### 实测结论：Agent 化在这个规模上没有检索增益，代价是 3 倍延迟
+
+同一天、同一份语料、同一套 29 题，两个链路正面对照（`hybrid` 检索，TOP_K=5）：
+
+| 指标 | hybrid（固定链路） | hybrid + Agent | 差异 |
+|------|------|------|------|
+| Hit@5（宽松） | 1.000 | 1.000 | 持平 |
+| **Hit@5（严格全词）** | **0.905** | **0.905** | **完全一致** |
+| 平均关键词覆盖率 | 0.952 | 0.952 | **完全一致** |
+| MRR | 0.869 | 0.845 | −2.4pt |
+| 忠实度（LLM-as-judge，n=24） | 4.25 | 4.33 | +0.08 |
+| 拒答准确率 | 1.0 | 1.0 | 持平 |
+| **平均延迟** | **3436 ms** | **10142 ms** | **2.95×** |
+| 平均工具调用 | — | 1.0 | — |
+
+**怎么读这张表**
+
+1. **检索层三项指标完全一致**，忠实度还略高一点 —— 说明 Agent 链路**没有把质量做坏**，工程上是可靠的。
+2. **但也没有变好**，而延迟涨到近 3 倍。根因在 `平均工具调用 = 1.0`：Agent 每次都只检索一次、query 就是用户原话 —— **它实际退化成了固定链路，只是多花了一轮模型调用**。
+3. **为什么模型不改写 query**：本项目的 middleware 为了保证「一定会检索」，在首次模型调用前就替模型把检索做完了。这是**有意用"必然检索"换"稳定"，代价是放弃了 query 改写**。若要吃到 Agent 的改写增益，应改为**让模型先自主决定、只在它偷懒时兜底**（见 `middleware.py` 的 `force_retrieval=False` 开关）。
+4. **天花板不在 Agent，在语料规模**：阶段 2 已量化出「29 题中 26 题三模式结果一致」—— 122 块的语料上向量检索已接近上限。Agent 要产生增益，前提是**语料大到单次检索必然漏**（需要多轮补检）。
+
+> **这条结论比"我做了个 Agent"值钱**：它回答了「**什么时候不该上 Agent**」。多步推理的收益上界，由「单次检索的召回缺口」决定 —— 缺口为零时，Agent 只有成本没有收益。
+
+三个新增件：
+
+| 文件 | 作用 |
+|------|------|
+| `src/tools.py` | 检索能力封装为 LangChain Tool（`search_knowledge_base`），含工具描述设计与结果截断 + 逐块引用溯源 |
+| `src/agent.py` | 工具调用型 Agent（langchain 1.x `create_agent`），多步推理 + 引用溯源 + 轨迹记录 |
+| `src/middleware.py` | 强制检索 middleware：首次模型调用前替模型完成检索，把"要不要检索"变成结构保障 |
+| `src/llm_adapter.py` | LLM 适配层：把文本形态的工具调用归一化为标准 `tool_calls`（安全阀 + 去重） |
+| `scripts/mcp_server.py` | 自建 MCP Server（stdio），把同一套检索能力经标准协议暴露出去 |
+
+> **langchain 1.x 的 API 变更**：1.x 移除了 0.x 的 `create_react_agent` / `AgentExecutor`（网上多数 ReAct 教程仍是旧 API，照抄会 ImportError）。1.x 用 `create_agent(model, tools, system_prompt=)` 返回一张图，`invoke({"messages": [...]})`；循环靠模型**原生 tool calling** 驱动，不再依赖正则解析 `Action:` 文本协议，稳定性明显更好。
+
+**为什么要做成 MCP 而不是内部函数**：内部函数只能被当前应用调用；想从 Claude Desktop / Cursor / 另一个 Agent 用同一套知识库就得复制代码。MCP 把能力标准化成「服务」，检索逻辑只有一份。
+
+**工具描述是选择准确率的第一变量**。`description` 不能只写「检索知识库」——模型不知道什么算需要检索。必须写清三件事：能做什么、什么时候**必须**用、什么时候**不要**用。
+
+### Agent 的隐形天花板：模型的工具协议遵循能力
+
+**踩坑实录**：阶段3 首次跑通后，29 题**全部「工具×0」**，Hit@K 全 0 —— 代码无报错，但 Agent 一次都没调工具。三层剥离定位：
+
+| 层 | 验证方法 | 结论 |
+|---|---|---|
+| ① 代码是否透传 tools | 绕开 langchain，用原始 HTTP 打 ollama `/api/chat` 带 `tools` 字段 | 能收到响应 → **透传没问题** |
+| ② 模型吐的是结构化还是文本 | `llm.bind_tools([t]).invoke(q)` 看 `tool_calls` 与 `content` | `tool_calls: []`，工具调用被写成**纯文本 JSON** |
+| ③ 模型模板是否声明协议 | `ollama show <model> --template` | 模板里**有** `<tool_call>` 段却仍不遵守 → **模型能力问题** |
+
+**根因**：`qwen2.5-coder` 是代码补全向的变体，工具协议遵循弱，输出格式五花八门（裸 JSON / `[name {json}]` / `<tool_call>` 标签）。而 langchain 1.x 的 agent 图**只认结构化 `AIMessage.tool_calls`**，看不见就直接结束循环。
+
+**消融实验（8 题探针：术语型 3 / 拒答型 2 / 多证据 2 / 寒暄 1）**
+
+| 配置 | 工具调用正常 | 失败模式 |
+|---|---|---|
+| `qwen2.5-coder:latest` + 适配层 | **4/8** | **不检索反而反问用户**（"请提供具体的指标名称"）——意愿问题，适配层救不了 |
+| `qwen2.5:7b` | **6/8** | **不检索就作答 + 编造引用标记**（实测出现 `ronics[1] 提到...`，`[1]` 是凭空捏的） |
+| `qwen2.5:7b` + **强制检索 middleware** | **8/8** | — |
+
+**三层修复与渐进验证**：
+
+1. `src/llm_adapter.py`：把三种文本变体归一化为标准 `tool_calls`（带"name 必须在工具名单里"的安全阀 + 去重）。**但它只救格式，救不了意愿**——coder 实测仅 4/8。
+2. **换模型** `AGENT_LLM_MODEL=qwen2.5:7b`：指令模型原生支持 tools（探针 3/3 吐结构化）。升到 6/8。
+3. `src/middleware.py`：**强制检索 middleware**（`before_model` 钩子）——首次模型调用前若尚无 ToolMessage 且问题非寒暄，**替模型把检索做完并注入结果**。升到 8/8。
+
+> **这条比指标更值钱**：① **Agent 的天花板首先取决于模型的工具协议遵循能力**，其次才是提示词与工程；② **能用结构保证的，不要指望提示词**——提示词只能"请求"模型，middleware 才能"替它做完"。
+>
+> 还有一个**提示词副作用**的坑值得记：为防幻觉写的拒答条款「资料不足时回答『知识库中没有找到相关内容』」，被模型当成了**固定开头模板**，出现"先写没找到、再补正确答案"的矛盾答案。修法是条件化措辞 + 显式禁止「两者都写」。**看到"先否后肯"的矛盾答案，先怀疑提示词模板，不要以为是检索失败。**
+
+跑法：
+
+```bash
+# Agent 端到端评估（需要 ollama 在线）
+python eval/evaluate.py --mode hybrid --agent
+
+# MCP Server（由客户端拉起，一般不手动跑）
+python scripts/mcp_server.py
+# 调试用 Inspector：
+#   npx @modelcontextprotocol/inspector .venv/Scripts/python.exe scripts/mcp_server.py
+
+# 离线验收（不需要 ollama，共 32 项断言）
+python tests/agent_offline_test.py   # 工具定义 / BM25 通路 / RRF / 来源提取 / MCP 协议层实调
+python tests/agent_parse_test.py     # Agent 消息解析 + 适配层三格式解析（21 项）
+
+# 模型工具协议探针（三层剥离定位"Agent 不调工具"）
+python tests/probe_tool_calling.py qwen2.5:7b
+
+# 8 题端到端批量实测（术语/拒答/多证据/寒暄四类，统计工具调用成功率）
+python tests/probe_agent_batch.py
+```
 
 ## 目录说明
 
@@ -148,12 +244,19 @@ kb-qa/
 │   ├── vectorstore.py      FAISS 索引（先建临时目录、成功才替换旧索引）
 │   ├── chunk_store.py      chunks.json：BM25 / 重排所需的原文
 │   ├── retriever.py        三模式检索器（vector / hybrid / hybrid+rerank）
+│   ├── tools.py            检索能力 → LangChain Tool（工具描述 + 结果截断 + 来源提取）
+│   ├── agent.py            工具调用型 Agent（1.x create_agent，多步调用 + 引用溯源）
+│   ├── middleware.py       强制检索 middleware（首次调用前替模型完成检索，结构保障）
+│   ├── llm_adapter.py      LLM 适配层（文本形态工具调用 → 标准 tool_calls）
 │   ├── generator.py        系统提示词 + LLM + OutputParser（LCEL 链）
 │   └── pipeline.py         RAG 主流程
 ├── api/main.py             FastAPI 服务
 ├── scripts/ingest.py       离线建库脚本
+├── scripts/mcp_server.py   自建 MCP Server（stdio，3 个工具）
 ├── eval/                   评测集 + 评估脚本 + 三份报告 + history.jsonl + archive/
 ├── tests/smoke_test.py     冒烟测试
+├── tests/agent_offline_test.py  阶段3 离线验收：工具/MCP 协议层（不需要 ollama）
+├── tests/agent_parse_test.py    阶段3 离线验收：Agent 消息解析逻辑
 ├── models/                 本地重排模型（不进 git）
 ├── storage/index/          FAISS 索引 + chunks.json（不进 git）
 └── TODO.md                 看不懂代码清单 + 踩坑记录（每周更新）
